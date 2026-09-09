@@ -15,6 +15,8 @@ export default defineConfig({
     // 3 is the maximum of browser instances - in a perfect world they will run in parallel
     hookTimeout: process.env.CI ? 120_000 * 3 : 20_000,
     testTimeout: process.env.CI ? 120_000 * 3 : 20_000,
+    // Retries WebDriver BiDi session-establishment flakes on CI (each spec spawns its own browser run).
+    retry: process.env.CI ? 2 : 0,
     sequence: {
       sequencer: class Sequencer {
         sort(specifications: TestSpecification[]) {

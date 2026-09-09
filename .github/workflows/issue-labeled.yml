@@ -1,12 +1,12 @@
 name: Issue Labeled
 
 on:
-  issues:
-    types: [labeled]
+  workflow_dispatch:
 
 jobs:
   reply-labeled:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: needs reproduction
         if: github.event.label.name == 'needs reproduction'

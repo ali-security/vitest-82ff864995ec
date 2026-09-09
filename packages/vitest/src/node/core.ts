@@ -1197,7 +1197,7 @@ export class Vitest {
    * @param force If true, the process will exit immediately after closing the projects.
    */
   public async exit(force = false): Promise<void> {
-    setTimeout(() => {
+    const teardownTimeoutHandle = setTimeout(() => {
       this.report('onProcessTimeout').then(() => {
         console.warn(`close timed out after ${this.config.teardownTimeout}ms`)
         this.state.getProcessTimeoutCauses().forEach(cause => console.warn(cause))
@@ -1225,6 +1225,11 @@ export class Vitest {
     }, this.config.teardownTimeout).unref()
 
     await this.close()
+    // The close finished in time, so the timeout must not survive this call:
+    // an uncleared handle fires later against an unrelated `process.exit`
+    // (e.g. the guard installed while embedding Vitest in-process) long after
+    // `exit()` resolved.
+    clearTimeout(teardownTimeoutHandle)
     if (force) {
       process.exit()
     }

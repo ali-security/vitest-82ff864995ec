@@ -73,7 +73,9 @@ for (const isolate of [true, false]) {
         },
         )
       }
-    })
+      // Each case spawns a whole nested Vitest run with coverage, which
+      // exceeds the 5s default timeout on the Windows runner.
+    }, 120_000)
   }
 }
 

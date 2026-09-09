@@ -11,6 +11,12 @@ const config = defineConfig({
   test: {
     pool: 'threads',
     setupFiles: ['./setup.ts'],
+    // Every case here spawns a whole nested Vitest run with coverage enabled.
+    // On CI (Windows and the browser-coverage projects especially) that
+    // routinely exceeds the 5s default, so the suite fails on wall clock
+    // rather than on any assertion.
+    testTimeout: process.env.CI ? 120_000 : 5_000,
+    hookTimeout: process.env.CI ? 120_000 : 10_000,
   },
 })
 

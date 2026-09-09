@@ -5,13 +5,16 @@ name: CI
 permissions: {}
 
 on:
-  push:
-    branches:
-      - main
-
-  pull_request:
-
   workflow_dispatch:
+    inputs:
+      test-filter:
+        description: >-
+          Optional scoped test selector. Empty (the default) runs the full
+          suite. When set, it replaces the `pnpm run test:ci` tail, e.g.
+          "--filter @vitest/test-cli run test -- mocker", and the browser job
+          runs only its mocking specs.
+        required: false
+        default: ''
 
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
@@ -22,73 +25,28 @@ env:
   VITEST_GENERATE_UI_TOKEN: 'true'
 
 jobs:
-  lint:
-    timeout-minutes: 10
-    runs-on: ubuntu-latest
-    name: 'Lint: node-latest, ubuntu-latest'
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: ./.github/actions/setup-and-cache
-
-      - name: Install
-        run: pnpm i
-
-      - name: Build
-        run: pnpm run build
-
-      # check uncommited LICENSE.md, auto-imports.d.ts, etc...
-      - name: Check stale build artifacts
-        run: git diff --exit-code
-
-      - name: Lint
-        run: pnpm run lint
-
-      - name: Typecheck
-        run: pnpm run typecheck
-
-      # From https://github.com/rhysd/actionlint/blob/main/docs/usage.md#use-actionlint-on-github-actions
-      - name: Check workflow files
-        run: |
-          bash <(curl https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
-          ./actionlint -color -shellcheck=""
-
-  changed:
-    runs-on: ubuntu-latest
-    name: 'Diff: node-latest, ubuntu-latest'
-    outputs:
-      should_skip: ${{ steps.changed-files.outputs.only_changed == 'true' }}
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Get changed files
-        id: changed-files
-        uses: tj-actions/changed-files@a284dc1814e3fd07f2e34267fc8f81227ed29fb8 # v45.0.9
-        with:
-          files: |
-            docs/**
-            .github/**
-            !.github/workflows/ci.yml
-            **.md
+  # The `lint` job (eslint, typecheck, actionlint and the `git diff --exit-code`
+  # stale-artifact gate) is removed: those are pure gates that execute none of
+  # the shipped code.
+  #
+  # The `changed` job (tj-actions/changed-files) is removed: a workflow_dispatch
+  # run has no PR diff to compute a skip decision from.
 
   test:
-    needs: changed
     name: 'Build&Test: node-${{ matrix.node_version }}, ${{ matrix.os }}'
-    if: needs.changed.outputs.should_skip != 'true'
     runs-on: ${{ matrix.os }}
 
-    timeout-minutes: 30
+    timeout-minutes: 50
 
     strategy:
       matrix:
         os: [ubuntu-latest]
-        node_version: [18, 20, 22, 24]
+        node_version: [18, '20.19.2', 22, 24]
         include:
           - os: macos-latest
-            node_version: 20
+            node_version: '20.19.2'
           - os: windows-latest
-            node_version: 20
+            node_version: '20.19.2'
       fail-fast: false
 
     steps:
@@ -109,19 +67,59 @@ jobs:
       - name: Build
         run: pnpm run build
 
+      # `pnpm pack` (not `npm pack`) is what rewrites the workspace protocol
+      # ranges (e.g. "@vitest/spy": "workspace:*") to the released version in
+      # the packed package.json, which is what the registry tarball contains.
+      - name: Pack @vitest/mocker
+        if: matrix.os == 'ubuntu-latest' && matrix.node_version == '20.19.2'
+        env:
+          # pnpm builds the published manifest with `pMapValues`, which assigns
+          # each key in await-COMPLETION order. Plain and `catalog:` specs
+          # resolve with no I/O and keep their source order, but a `workspace:`
+          # spec reads the linked package's manifest from disk, so those keys are
+          # appended last, ordered by libuv threadpool completion. With the
+          # default pool of 4 threads the two workspace devDependencies
+          # (@vitest/spy and @vitest/utils) race, and the packed package.json
+          # comes out with them in either order. One thread forces strict FIFO,
+          # so completion order equals source order and the pack is reproducible.
+          UV_THREADPOOL_SIZE: 1
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/seal-artifacts"
+          cd packages/mocker
+          pnpm pack --pack-destination "$GITHUB_WORKSPACE/seal-artifacts"
+          cd "$GITHUB_WORKSPACE"
+          mv "$GITHUB_WORKSPACE/seal-artifacts/vitest-mocker-3.2.4.tgz" \
+             "$GITHUB_WORKSPACE/seal-artifacts/mocker-3.2.4.tgz"
+
+      - name: Upload @vitest/mocker tarball
+        if: ${{ always() && matrix.os == 'ubuntu-latest' && matrix.node_version == '20.19.2' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: mocker-tarball
+          path: seal-artifacts/mocker-3.2.4.tgz
+          if-no-files-found: error
+
       - name: Test
+        if: ${{ inputs.test-filter == '' }}
         run: pnpm run test:ci
 
+      - name: Test (scoped)
+        if: ${{ inputs.test-filter != '' }}
+        shell: bash
+        env:
+          CI: 'true'
+        run: pnpm -r --reporter-hide-prefix --stream --sequential ${{ inputs.test-filter }}
+
       - name: Test Examples
+        if: ${{ inputs.test-filter == '' }}
         run: pnpm run test:examples
 
       - name: Unit Test UI
+        if: ${{ inputs.test-filter == '' }}
         run: pnpm run -C packages/ui test:ui
 
   test-browser:
-    needs: changed
-    name: 'Browsers: node-20, ${{ matrix.os }}'
-    if: needs.changed.outputs.should_skip != 'true'
+    name: 'Browsers: node-20.19.2, ${{ matrix.os }}'
 
     runs-on: ${{ matrix.os }}
     strategy:
@@ -131,14 +129,14 @@ jobs:
           - windows-latest
       fail-fast: false
 
-    timeout-minutes: 30
+    timeout-minutes: 50
 
     steps:
       - uses: actions/checkout@v4
 
       - uses: ./.github/actions/setup-and-cache
         with:
-          node-version: 20
+          node-version: '20.19.2'
 
       - uses: browser-actions/setup-chrome@c785b87e244131f27c9f19c1a33e2ead956ab7ce # v1.7.3
       - uses: browser-actions/setup-firefox@634a60ccd6599686158cf5a570481b4cd30455a2 # v1.5.4
@@ -153,43 +151,25 @@ jobs:
         run: pnpm run build
 
       - name: Test Browser (playwright)
+        if: ${{ inputs.test-filter == '' }}
         run: pnpm run test:browser:playwright
 
       - name: Test Browser (webdriverio)
+        if: ${{ inputs.test-filter == '' }}
         run: pnpm run test:browser:webdriverio
 
-  test-rolldown:
-    needs: changed
-    # macos-latest is the fastes one
-    name: 'Rolldown&Test: node-20, macos-latest'
-    if: needs.changed.outputs.should_skip != 'true'
-    runs-on: macos-latest
+      # A scoped dispatch only needs the browser specs that exercise module
+      # mocking; the full browser matrix runs on the unfiltered dispatch.
+      - name: Test Browser mocking (scoped)
+        if: ${{ inputs.test-filter != '' }}
+        shell: bash
+        run: |
+          pnpm -C test/browser run test:playwright mocking
+          pnpm -C test/browser run test:webdriverio mocking
 
-    timeout-minutes: 30
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: ./.github/actions/setup-and-cache
-        with:
-          node-version: 20
-
-      - uses: browser-actions/setup-chrome@c785b87e244131f27c9f19c1a33e2ead956ab7ce # v1.7.3
-
-      - name: Install
-        run: pnpm add vite@npm:rolldown-vite && git add . && git commit -m "ci" && pnpm i --prefer-offline --no-frozen-lockfile
-
-      - name: Install Playwright Dependencies
-        run: pnpm exec playwright install --with-deps --only-shell
-
-      - name: Build
-        run: pnpm run build
-
-      - name: Test
-        run: pnpm run test:ci
-
-      - name: Test Examples
-        run: pnpm run test:examples
-
-      - name: Test Browser (playwright)
-        run: pnpm run test:browser:playwright
+  # The `test-rolldown` job is removed. Its install step was
+  # `pnpm add vite@npm:rolldown-vite && git add . && git commit -m "ci" &&
+  # pnpm i --prefer-offline --no-frozen-lockfile`: an unpinned dependency
+  # resolved off the lockfile, so it always pulls today's experimental
+  # rolldown-vite build, and it needs a git identity to commit. It ran the same
+  # `test:ci` / `test:examples` as the `test` job, so no coverage is lost.

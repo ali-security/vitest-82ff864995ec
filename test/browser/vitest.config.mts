@@ -47,6 +47,10 @@ export default defineConfig({
   test: {
     include: ['test/**.test.{ts,js,tsx}'],
     includeSource: ['src/*.ts'],
+    // CI runners (Windows and macOS especially) are slow to start browser
+    // sessions; the 15s browser default is not enough there.
+    testTimeout: process.env.CI ? 60_000 : undefined,
+    hookTimeout: process.env.CI ? 60_000 : undefined,
     // having a snapshot environment doesn't affect browser tests
     snapshotEnvironment: './custom-snapshot-env.ts',
     browser: {

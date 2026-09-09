@@ -5,6 +5,13 @@ import { runVitest } from '../../test-utils'
 describe('import durations', () => {
   const root = resolve(__dirname, '..', 'fixtures')
 
+  // The fixtures sleep via `setTimeout`, which libuv schedules off its cached
+  // loop time, so a 25ms sleep can be measured as ~24.7ms. These assertions are
+  // wall-clock lower bounds, so they need a sub-millisecond tolerance to be
+  // deterministic; the point is that the duration is attributed to the right
+  // module, not that the timer is exact.
+  const TIMER_SLACK_MS = 1
+
   it('should populate importDurations on File with import durations during execution', async () => {
     const { exitCode, ctx } = await runVitest({
       root,
@@ -22,19 +29,19 @@ describe('import durations', () => {
     expect(file.importDurations).toBeDefined()
 
     // The main file should be >=75ms because 50ms+25ms
-    expect(file.importDurations?.[file.filepath]?.totalTime).toBeGreaterThanOrEqual(75)
+    expect(file.importDurations?.[file.filepath]?.totalTime).toBeGreaterThanOrEqual(75 - TIMER_SLACK_MS)
 
     // The 50ms file imports the 25ms file, so the self time should be >=50ms and the total time should be >=75ms
     const utilsFile = resolve(root, 'import-durations-50ms.ts')
 
-    expect(file.importDurations?.[utilsFile]?.selfTime).toBeGreaterThanOrEqual(50)
-    expect(file.importDurations?.[utilsFile]?.totalTime).toBeGreaterThanOrEqual(75)
+    expect(file.importDurations?.[utilsFile]?.selfTime).toBeGreaterThanOrEqual(50 - TIMER_SLACK_MS)
+    expect(file.importDurations?.[utilsFile]?.totalTime).toBeGreaterThanOrEqual(75 - TIMER_SLACK_MS)
 
     // The 25ms file should have a self time >25ms and a total time >25ms
     const helperFile = resolve(root, 'import-durations-25ms.ts')
 
-    expect(file.importDurations?.[helperFile]?.selfTime).toBeGreaterThanOrEqual(25)
-    expect(file.importDurations?.[helperFile]?.totalTime).toBeGreaterThanOrEqual(25)
+    expect(file.importDurations?.[helperFile]?.selfTime).toBeGreaterThanOrEqual(25 - TIMER_SLACK_MS)
+    expect(file.importDurations?.[helperFile]?.totalTime).toBeGreaterThanOrEqual(25 - TIMER_SLACK_MS)
   }, 40000)
 
   it('should handle tests with no imports gracefully', async () => {
