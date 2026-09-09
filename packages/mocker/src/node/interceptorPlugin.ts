@@ -1,6 +1,7 @@
 import type { Plugin } from 'vite'
 import type { MockedModuleSerialized } from '../registry'
 import { readFile } from 'node:fs/promises'
+import { isAbsolute, relative } from 'node:path'
 import { join } from 'node:path/posix'
 import { ManualMockedModule, MockerRegistry } from '../registry'
 import { cleanUrl, createManualModuleSource } from '../utils'
@@ -12,6 +13,25 @@ export interface InterceptorPluginOptions {
    */
   globalThisAccessor?: string
   registry?: MockerRegistry
+  /**
+   * Register the `vitest:interceptor:*` WebSocket events in `configureServer`.
+   * Disable this when mocks are registered through another authenticated
+   * channel and the raw dev-server socket should not accept them.
+   * @default true
+   */
+  registerWebSocketEvents?: boolean
+}
+
+// Vite only exposes `isFileLoadingAllowed` since v6, but this plugin also
+// supports Vite 5, so the containment check is implemented here. The redirect
+// is built with `node:path/posix`, so it can mix separators on Windows - the
+// platform-native `relative` normalizes both sides before comparing.
+function isPathInsideRoot(root: string, file: string): boolean {
+  const relativePath = relative(root, file)
+  if (relativePath === '' || isAbsolute(relativePath)) {
+    return false
+  }
+  return relativePath.split(/[\\/]/)[0] !== '..'
 }
 
 export function interceptorPlugin(options: InterceptorPluginOptions = {}): Plugin {
@@ -56,6 +76,9 @@ export function interceptorPlugin(options: InterceptorPluginOptions = {}): Plugi
       },
     },
     configureServer(server) {
+      if (options.registerWebSocketEvents === false) {
+        return
+      }
       server.ws.on('vitest:interceptor:register', (event: MockedModuleSerialized) => {
         if (event.type === 'manual') {
           const module = ManualMockedModule.fromJSON(event, async () => {
@@ -67,7 +90,14 @@ export function interceptorPlugin(options: InterceptorPluginOptions = {}): Plugi
         else {
           if (event.type === 'redirect') {
             const redirectUrl = new URL(event.redirect)
-            event.redirect = join(server.config.root, redirectUrl.pathname)
+            const redirect = join(server.config.root, redirectUrl.pathname)
+            // the redirect is served through the `load` hook above, so it must
+            // stay inside the project root and never escape it
+            if (!isPathInsideRoot(server.config.root, redirect)) {
+              server.ws.send('vitest:interceptor:register:result')
+              return
+            }
+            event.redirect = redirect
           }
           registry.register(event)
         }
